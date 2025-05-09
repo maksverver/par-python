@@ -1,26 +1,22 @@
-import codecs
+#!/usr/bin/env python3
+
+# PAR2 parser
+
+from parser import (
+    BodyReader, HashingBodyReader, PacketHeader, ReadPackets,
+    Unicode, ReadFull, ReadExact, ReadStruct,
+)
+
 from collections import defaultdict
 from dataclasses import dataclass
 import glob
 import hashlib
-import io
 from pathlib import Path
 import os
 import sys
-import struct
 import traceback
-from typing import Any, ByteString, Callable, IO
+from typing import Any
 
-
-type ByteReader = IO[bytes] | BodyReader
-
-
-# Parity Volume Set Specification 2.0
-# https://parchive.sourceforge.net/docs/specifications/parity-volume-spec/article-spec.html
-
-PAR2_PKT_HEAD_MAGIC  = b'PAR2\0PKT'
-PAR2_PKT_HEAD_FORMAT = '<Q16s16s16s'
-PAR2_PKT_HEAD_SIZE   = len(PAR2_PKT_HEAD_MAGIC) + struct.calcsize(PAR2_PKT_HEAD_FORMAT)
 
 # Core packet types
 PAR2_PKT_TYP_MAIN     = b'PAR 2.0\0Main\0\0\0\0'
@@ -37,163 +33,6 @@ PAR2_PKT_TYP_FILESLIC = b'PAR 2.0\0FileSlic'        # Input file slice
 PAR2_PKT_TYP_RFSC     = b"PAR 2.0\0RFSC\0\0\0\0"    # Recovery file slice checksum
 PAR2_PKT_TYP_PKDMAIN  = b'PAR 2.0\0PkdMain\0'       # Packed main
 PAR2_PKT_TYP_PKDRECVS = b'PAR 2.0\0PkdRecvS'        # Packed recovery slice
-
-
-# Buffer size used to read data in some places
-BUFFER_SIZE = 64 << 10  # 64 KiB
-
-
-class UnexpectedEndOfFileException(Exception):
-    pass
-
-
-class BodyReader(io.IOBase):
-    '''File wrapper that allows only a fixed-sized portion of the underlying
-    file to be read. Used to read packet bodies which have a known length.'''
-
-    def __init__(self, file: IO[bytes], size_left: int):
-        self.file = file
-        self.size_left = size_left
-
-    def readable(self) -> bool:
-        return True
-
-    def readall(self):
-        parts = [self.read(self.size_left)]
-        while self.size_left > 0:
-            parts.append(self.read(self.size_left))
-        return b''.join(parts)
-
-    def read(self, n) -> bytes:
-        '''Reads up to `n` bytes, or all bytes remaining if n < 0.
-        May return fewer bytes than requested. Returns an empty bytestring
-        only if the end of the body is reached.
-        
-        If the underlying file object returns an empty bytestring before the
-        end of the body is reached, raises UnexpectedEndOfFileException.'''
-
-        if self.size_left == 0:
-            return b''
-
-        if n < 0:
-            return self.readall()
-
-        res = self.file.read(min(n, self.size_left))
-        if not res:
-            raise UnexpectedEndOfFileException()
-
-        assert 0 < len(res) <= self.size_left
-        self.size_left -= len(res)
-
-        return res
-
-
-class HashingBodyReader[H: hashlib._Hash](BodyReader):
-    '''File wrapper that also updates the hash with data read.
-    Used to hash packet bodies.'''
-
-    def __init__(self, file: IO[bytes], size_left: int, hash_start: H):
-        super().__init__(file, size_left)
-        self.hash = hash_start
-
-    def finishhash(self) -> H:
-        '''Reads the remaining data in the body (if any) and returns the
-        final hash value.'''
-        while self.size_left > 0:
-            self.read(BUFFER_SIZE)
-        return self.hash
-
-    def read(self, n: int) -> bytes:
-        res = super().read(n)
-        self.hash.update(res)
-        return res
-
-
-def ReadFull(f: ByteReader, n: int) -> bytes:
-    '''Reads `n` bytes from `f`, calling `f.read()` repeatedly if necessary.
-       Returns a short bytestring only if end-of-file is reached.'''
-    res = f.read(n)
-    while len(res) < n:
-        tmp = f.read(n - len(res))
-        if not tmp:
-            break
-        res += tmp
-    return res
-
-
-def ReadExact(f: ByteReader, n: int) -> bytes:
-    'Reads exactly `n` bytes from `f`, or raises UnexpectedEndOfFileException.'
-    res = ReadFull(f, n)
-    if len(res) < n:
-        raise UnexpectedEndOfFileException()
-    return res
-
-
-def ReadStruct(f: ByteReader, format: str):
-    return struct.unpack(format, ReadExact(f, struct.calcsize(format)))
-
-
-def FindMagic(f: ByteReader, magic: bytes) -> bool:
-    buf = ReadFull(f, len(magic))
-    padding_warning = False
-    while buf != magic:
-        if len(buf) < len(magic):
-            return False  # EOF reached
-
-        # This could be optimized but I'm not sure it matters. 
-        i = buf.find(magic[0], 1)
-        if i == -1:
-            i = len(buf)
-        if not padding_warning and buf[:i].count(0) != i:
-            print('WARNING: nonzero padding bytes found', file=sys.stderr)
-            padding_warning = True  # don't warn more than once
-        buf = buf[i:]
-        buf += ReadFull(f, len(magic) - len(buf))
-    return True
-
-@dataclass(frozen=True)
-class PacketHeader:
-    size: int           # Total size of the packet (including header)
-    md5: bytes          # MD5 hash code (starting from rsid) (16 bytes)
-    rsid: bytes         # Resource Set ID (16 bytes)
-    ptyp: bytes         # Packet Type (16 bytes)
-
-def ReadPacketHeader(f: IO[bytes]) -> PacketHeader | None:
-    '''Reads the next packet header from the file, skipping padding.'''
-    if not FindMagic(f, PAR2_PKT_HEAD_MAGIC):
-        return None
-
-    data = ReadExact(f, PAR2_PKT_HEAD_SIZE - len(PAR2_PKT_HEAD_MAGIC))
-    size, md5, rsid, ptyp = struct.unpack(PAR2_PKT_HEAD_FORMAT, data)
-    return PacketHeader(size=size, md5=md5, rsid=rsid, ptyp=ptyp)
-
-
-def Unicode(b: bytes) -> str:
-    '''Converts bytes to a UTF-8 string (replacing invalid characters)'''
-    return str(b, 'UTF-8', 'replace')
-
-
-type PacketHandler = Callable[[PacketHeader, HashingBodyReader], Any]
-
-
-def ReadPackets(file: IO[bytes], handler: PacketHandler | None):
-    while (head := ReadPacketHeader(file)) is not None:
-        body_size = head.size - PAR2_PKT_HEAD_SIZE
-        if body_size < 0:
-            print(f'WARNING: packet of type {Unicode(head.ptyp)} with length shorter than header; skipped', file=sys.stderr)
-            continue
-
-        h = hashlib.md5()
-        h.update(head.rsid)
-        h.update(head.ptyp)
-        reader = HashingBodyReader(file, body_size, h)
-
-        if handler is not None:
-            handler(head, reader)
-
-        md5 = reader.finishhash().digest()
-        if md5 != head.md5:
-            print(f'WARNING: packet of type {Unicode(head.ptyp)} has MD5 mismatch (expected: {head.md5.hex()} computed: {md5.hex()})')
 
 
 @dataclass
@@ -252,6 +91,10 @@ class ParScanner:
         self.packets_by_rsid = defaultdict(dict)
 
     def HandlePacket(self, head: PacketHeader, r: HashingBodyReader):
+        # Only handles PAR2 for now
+        if head.ver != 2:
+            return
+
         packets = self.packets_by_rsid[head.rsid]
         if head in packets:
             #print(f'INFO: ignoring duplicated packet type "{Unicode(head.ptyp)}"', file=sys.stderr)
@@ -269,9 +112,9 @@ class ParScanner:
 
         # Check that the checksum is correct
         # TODO: this duplicates ReadPackets() functionality
-        md5 = r.finishhash().digest()
-        if md5 != head.md5:
-            print(f'WARNING: packet of type {Unicode(head.ptyp)} has MD5 mismatch (expected: {head.md5.hex()} computed: {md5.hex()})')
+        csum = r.finishhash().digest()
+        if csum != head.csum:
+            print(f'WARNING: packet of type {Unicode(head.ptyp)} failed checksum (expected: {head.csum.hex()} computed: {csum.hex()})')
             return
 
         # All good! Keep it.
@@ -282,7 +125,7 @@ class ParScanner:
         rest = r.readall()
         if len(rest) < 16*file_count or len(rest) % 16 != 0:
             print('ERROR: main packet invalid', file=sys.stderr)
-            return
+            return None
         recovery_file_ids = [rest[i:i+16] for i in range(0, 16*file_count, 16)]
         ignored_file_ids  = [rest[i:i+16] for i in range(16*file_count, len(rest), 16)]
         return MainPacket(slice_size=slice_size, file_count=file_count,
@@ -325,15 +168,15 @@ def ExtractInputSlices(file_desc, slice_size) -> list[bytes] | None:
     except Exception as e:
         print(f'ERROR: Could not get file size of {path}', file=sys.stderr)
         traceback.print_exception(e)  # for debugging
-        return
+        return None
 
     if file_size != file_desc.file_size:
         print(f'ERROR: invalid file size of {path} (expected: {file_desc.file_size}, actual: {file_size})', file=sys.stderr)
-        return
+        return None
 
     if not path.exists():
         print(f'WARNING: File does not exist: {path}', file=sys.stderr)
-        return
+        return None
 
     try:
         slices = []
@@ -356,7 +199,7 @@ def ExtractInputSlices(file_desc, slice_size) -> list[bytes] | None:
     except Exception as e:
         print(f"ERROR: couldn't read file at {path}")
         traceback.print_exception(e)  # for debugging
-        return
+        return None
 
 
 def ProcessResourceSetPackets(packets: dict[PacketHeader, Any], input_path: Path):
@@ -393,15 +236,15 @@ def ProcessResourceSetPackets(packets: dict[PacketHeader, Any], input_path: Path
     for packet in packets_by_type[PAR2_PKT_TYP_IFSC].values():
         ifsc_packets_by_file_id[packet.file_id] = packet
 
-    input_slices = []
+    input_slices: list[bytes] = []
     for file_id in main.recovery_file_ids:
         file_desc = file_descs_by_file_id.get(file_id)
         if file_desc is None:
-            print(f'ERROR: Missing file description for recovery file ID {file_id}', file=sys.stderr)
+            print(f'ERROR: Missing file description for recovery file ID {file_id.hex()}', file=sys.stderr)
         else:
             ifsc = ifsc_packets_by_file_id.get(file_id)
             if ifsc is None:
-                print(f'ERROR: Missing file slice checksums for recovery file ID {file_id}', file=sys.stderr)
+                print(f'ERROR: Missing file slice checksums for recovery file ID {file_id.hex()}', file=sys.stderr)
             else:
                 slices_needed = (file_desc.file_size + main.slice_size - 1) // main.slice_size
                 if slices_needed != len(ifsc.checksums):
@@ -441,7 +284,7 @@ def ProcessResourceSetPackets(packets: dict[PacketHeader, Any], input_path: Path
 
     print('Trying to recover each individual slice')
     for i in range(len(input_slices)):
-        slices = list(input_slices)
+        slices: list[bytes | None] = list(input_slices)
         slices[i] = None
         assert calc.Recover(slices, recv_slices_by_exponent) == [input_slices[i]]
         print(f'{i + 1}/{len(input_slices)} succeeded')
@@ -473,7 +316,7 @@ if __name__ == '__main__':
                 traceback.print_exception(e)  # for debugging
 
     for (rsid, packets) in scanner.GetPacketsByRsid().items():
-        print(f'Processing resource set ID {rsid}')
+        print(f'Processing resource set ID {rsid.hex()}')
         ProcessResourceSetPackets(packets, input_path=input_path)
 
 # TODO:
