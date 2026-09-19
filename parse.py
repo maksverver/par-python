@@ -114,7 +114,7 @@ class ParScanner:
         # TODO: this duplicates ReadPackets() functionality
         csum = r.finishhash().digest()
         if csum != head.csum:
-            print(f'WARNING: packet of type {Unicode(head.ptyp)} failed checksum (expected: {head.csum.hex()} computed: {csum.hex()})')
+            print(f'WARNING: packet of type {Unicode(head.ptyp)} failed checksum (expected: {head.csum.hex()} computed: {csum.hex()})', file=sys.stderr)
             return
 
         # All good! Keep it.
@@ -278,9 +278,9 @@ def ProcessResourceSetPackets(packets: dict[PacketHeader, Any], input_path: Path
 
     print('Verifying each recovery slice')
     for exp, data in recv_slices_by_exponent.items():
-
-        # Verify recovery slice is correct
-        assert calc.GenerateRecoverySlice(exp, input_slices) == data
+        generated = calc.GenerateRecoverySlice(exp, input_slices)
+        print('Recovery slice with exponent', exp, 'OK' if generated == data else 'BAD!')
+        assert data == generated
 
     print('Trying to recover each individual slice')
     for i in range(len(input_slices)):
@@ -303,21 +303,25 @@ def ProcessResourceSetPackets(packets: dict[PacketHeader, Any], input_path: Path
 
 
 if __name__ == '__main__':
-    input_path=Path('test')
-    prefix='file'
-    scanner = ParScanner()
-    for filename in input_path.glob(prefix + '*par2'):
-        print('Processing input file', filename)
-        with open(filename, 'rb') as f:
-            try:
-                ReadPackets(f, scanner.HandlePacket)
-            except Exception as e:
-                print(f'ERROR: error occured while reading', e)
-                traceback.print_exception(e)  # for debugging
+    if len(sys.argv) != 2:
+        print('Usage:', os.path.basename(sys.argv[0]), '<filename.par2>')
+    else:
+        arg = sys.argv[1]
+        input_path=Path(os.path.dirname(arg))
+        prefix=os.path.basename(arg).removesuffix('.par2')
+        scanner = ParScanner()
+        for filename in input_path.glob(prefix + '*.par2'):
+            print('Processing input file', filename)
+            with open(filename, 'rb') as f:
+                try:
+                    ReadPackets(f, scanner.HandlePacket)
+                except Exception as e:
+                    print(f'ERROR: error occured while reading', e)
+                    traceback.print_exception(e)  # for debugging
 
-    for (rsid, packets) in scanner.GetPacketsByRsid().items():
-        print(f'Processing resource set ID {rsid.hex()}')
-        ProcessResourceSetPackets(packets, input_path=input_path)
+        for (rsid, packets) in scanner.GetPacketsByRsid().items():
+            print(f'Processing resource set ID {rsid.hex()}')
+            ProcessResourceSetPackets(packets, input_path=input_path)
 
 # TODO:
 #   - later: need better way to issue diagnostics (include file and location etc.)
