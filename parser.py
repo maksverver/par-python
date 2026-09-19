@@ -1,12 +1,9 @@
 from dataclasses import dataclass
 import hashlib
 import io
-import os
 import sys
 import struct
-import traceback
-import collections
-from typing import Any, ByteString, Callable, IO, cast, TYPE_CHECKING
+from typing import Any, Callable, IO, cast, TYPE_CHECKING
 from blake3 import blake3  # optional if you don't need PAR3 support
 
 if TYPE_CHECKING:
@@ -123,7 +120,7 @@ class BodyReader(io.IOBase):
         '''Reads up to `n` bytes, or all bytes remaining if n < 0.
         May return fewer bytes than requested. Returns an empty bytestring
         only if the end of the body is reached.
-        
+
         If the underlying file object returns an empty bytestring before the
         end of the body is reached, raises UnexpectedEndOfFileException.'''
 
@@ -199,7 +196,7 @@ def FindMagic(f: ByteReader, warn_about_padding=True) -> int | None:
         if len(buf) < PKT_MAGIC_LEN:
             return None  # EOF reached
 
-        # This could be optimized but I'm not sure it matters. 
+        # This could be optimized but I'm not sure it matters.
         i = buf.find(PKT_MAGIC_CHR, 1)
         if i == -1:
             i = len(buf)
@@ -266,4 +263,3 @@ def ReadPackets(file: IO[bytes], handler: PacketHandler | None):
         csum = reader.finishhash().digest()
         if csum != head.csum:
             print(f'WARNING: packet of type {Unicode(head.ptyp)} failed checksum (expected: {head.csum.hex()} computed: {csum.hex()})')
-

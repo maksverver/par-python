@@ -141,7 +141,7 @@ def ProcessFiles(filenames: list[str], file=sys.stdout):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print('Prints info about the packets contained in par2 files')
+        print('Prints info about the packets contained in par2/par3 files')
         print()
         print(f'Usage: {sys.argv[0]} <file...>')
         sys.exit(1)

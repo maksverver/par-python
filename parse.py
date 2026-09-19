@@ -107,7 +107,7 @@ class ParScanner:
 
         # Try to parse the packet
         packet = handler(head, r)
-        if not packet: 
+        if not packet:
             return  # Packet was not processed. Error should have been printed by handler
 
         # Check that the checksum is correct
