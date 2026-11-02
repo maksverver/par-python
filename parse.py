@@ -9,7 +9,6 @@ from parser import (
 
 from collections import defaultdict
 from dataclasses import dataclass
-import glob
 import hashlib
 from pathlib import Path
 import os
@@ -307,10 +306,15 @@ if __name__ == '__main__':
         print('Usage:', os.path.basename(sys.argv[0]), '<filename.par2>')
     else:
         arg = sys.argv[1]
-        input_path=Path(os.path.dirname(arg))
-        prefix=os.path.basename(arg).removesuffix('.par2')
+        input_path = Path(os.path.dirname(arg))
+        prefix = os.path.basename(arg).removesuffix('.par2')
+        pattern = prefix + '*.par2'
+        files = list(input_path.glob(pattern))
+        if not files:
+            print('No files match:', pattern)
+            sys.exit(1)
         scanner = ParScanner()
-        for filename in input_path.glob(prefix + '*.par2'):
+        for filename in files:
             print('Processing input file', filename)
             with open(filename, 'rb') as f:
                 try:
