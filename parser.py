@@ -98,7 +98,6 @@ class UnexpectedEndOfFileException(Exception):
     pass
 
 
-
 class BodyReader(io.IOBase):
     '''File wrapper that allows only a fixed-sized portion of the underlying
     file to be read. Used to read packet bodies which have a known length.'''
@@ -110,33 +109,34 @@ class BodyReader(io.IOBase):
     def readable(self) -> bool:
         return True
 
-    def readall(self):
-        parts = [self.read(self.size_left)]
+    def readall(self) -> bytes:
+        '''Reads all remaining bytes, using multiple calls to read() if necessary.'''
+        parts = []
         while self.size_left > 0:
-            parts.append(self.read(self.size_left))
+            part = self.read(self.size_left)
+            assert part  # otherwise UnexpectedEndOfFileException was thrown
+            parts.append(part)
         return b''.join(parts)
 
     def read(self, n: int = -1) -> bytes:
         '''Reads up to `n` bytes, or all bytes remaining if n < 0.
         May return fewer bytes than requested. Returns an empty bytestring
-        only if the end of the body is reached.
+        only if n == 0 or the end of the body is reached.
 
         If the underlying file object returns an empty bytestring before the
         end of the body is reached, raises UnexpectedEndOfFileException.'''
 
-        if self.size_left == 0:
+        if n == 0:
             return b''
-
-        if n < 0:
-            return self.readall()
-
-        res = self.file.read(min(n, self.size_left))
+        if self.size_left == 0:
+            raise UnexpectedEndOfFileException()
+        if n < 0 or n > self.size_left:
+            n = self.size_left
+        res = self.file.read(n)
         if not res:
             raise UnexpectedEndOfFileException()
-
         assert 0 < len(res) <= self.size_left
         self.size_left -= len(res)
-
         return res
 
 
